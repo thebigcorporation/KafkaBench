@@ -65,7 +65,7 @@ The test summary aggregate for Kbps corresponds to 4 parallel streams of
 we have 4 parallel streams taking 3.3 + 3.2 + 4.5 + 3.1 s = 14.1 
 
 Differences between test summaries and per-partition or per-topic summaries
-occur baed on round-off; since the averages for each report are computed
+occur based on round-off; since the averages for each report are computed
 separately; they are not averages of averages; but wholely computed from
 aggregates in each instance. The user is encouraged to confirm the equations.
 
