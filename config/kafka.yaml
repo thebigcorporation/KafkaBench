@@ -1,0 +1,9 @@
+kafka:
+  bootstrapServers:
+    - kafka:9092
+  securityProtocol: SASL_SSL
+  sasl:
+    mechanism: PLAIN
+    username: <APIKEY/USERNAME>
+    password: <SECRET>
+
