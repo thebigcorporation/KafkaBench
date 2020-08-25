@@ -71,6 +71,17 @@ aggregates in each instance. The user is encouraged to confirm the equations.
 
 We used some variation of Gnuplot configuration similar to:
 
+set xtics 2
+set ytics
+set y2tics
+set autoscale y
+set autoscale y2
+set xrange [1:9]
+set yrange [:2500]
+set xlabel "Partitions"
+set ylabel "Milliseconds"
+set y2label "Kb/s / Msg/s"
+set key font ",16"
 set tics font ",16"
 set title font ",18"
 set xlabel font ",20"
