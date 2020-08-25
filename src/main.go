@@ -1,4 +1,3 @@
-
 package main
 
 /*
@@ -92,11 +91,6 @@ func main() {
 			panic(e.Error())
 		}
 	}
-	runTests()
-}
-
-func runTests() {
-	fmt.Printf("\nRunning Tests with Stream size: %db Completion: %t Acks: %d Replicas: %d\n", sSize/1024, withCompletion, acks, replicas)
 	runStreams()
 }
 
@@ -121,8 +115,10 @@ func runPartitionStream(topics, partitions uint) {
 func runMsgStream(topics, partitions, msgSize uint) {
 	var i uint
 	for i = 0; i < tests; i++ {
-		println("\nIteration: ", (i + 1), " Topics: ", topics, " Partitions: ", partitions, " MsgSize: ", msgSize, " Acks: ", acks, " Replicas: ", replicas)
-		printDashes()
+		str := fmt.Sprintf("Iteration %d Stream %d Topics %d Prtns %d MsgSize %d Acks %d Replicas %d Completions %t",
+			(i + 1), sSize, topics, partitions, msgSize, acks, replicas, withCompletion)
+		printStr(1, str)
+		printStr(len(str), "-")
 		testKafka(topics, partitions, msgSize)
 	}
 }

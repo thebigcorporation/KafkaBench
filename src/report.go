@@ -1,4 +1,3 @@
-
 package main
 
 /*
@@ -40,12 +39,20 @@ func printHeader() {
 	println(" Topic Prtn MsgSize Messages MinLat  MaxLat  AvgLat     Kb/s    Msg/s   Runtime")
 	printDashes()
 }
+
 func printDashes() {
-	println("----------------------------------------------------------------------------------")
+	printStr(82, "-")
 }
 
 func printEquals() {
-	println("==================================================================================")
+	printStr(82, "=")
+}
+
+func printStr(n int, str string) {
+	for i := 0; i < n; i++ {
+		fmt.Printf("%s", str)
+	}
+	println()
 }
 
 func writeHeader(file *os.File) {
