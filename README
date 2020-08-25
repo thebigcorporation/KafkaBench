@@ -1,0 +1,102 @@
+Kafka Benchmark in Go
+=====================
+
+The implementation uses Confluent's librdkafka and kafka-go libraries
+to deploy a multithreaded benchmark with the capability of producing
+messages of varying sizes to Kafka brokers.
+
+Control knobs are enumerated in the parameter parser, and include:
+
+ - Number of Topics (limited by librdkafka's bound and open files)
+ - Number of Partitions in each topic
+ - Number of broker side replicas in each partition
+ - Message size
+ - Whether or not to use a producer side completions chan
+ - Number of acks requested
+ - Size of the data stream sent to each partition
+
+Defaults are documented in the constants secion of main.go
+
+Outputs reported are:
+
+ - Latency Min/Max/Avg for end-to-end delivery of Messages from producer to consumer
+ - Messages per second delivered
+ - Kilobytes per second delivered
+
+Reporting is per test (aggregate of all topics), per topic, and per partition
+In addition, the test results are written into CSV files named to indicated the
+test parameters, for subsequent use by GnuPlot or similar.
+
+CVS format is (e.g. test summary report):
+
+"KafkaPerf-pkc-ep9-summary-T01-P04-R03-M000064b-S000001024-A01-Ctrue.csv":
+Topic, Prtn, MsgSize, Messages, MinLat, MaxLat, AvgLat, Kbps, Msgps, Runtime
+  1,   4,     64,     64,     94,    897,    269,     1.1,    18.1,    14.2
+  1,   4,     64,     64,     94,    552,    223,     1.7,    27.1,     9.4
+  1,   4,     64,     64,     95,    306,    182,     2.3,    36.3,     7.1
+  1,   4,     64,     64,     87,    886,    290,     2.0,    32.1,     8.0
+  1,   4,     64,     64,     96,    430,    167,     2.3,    36.4,     7.0
+  1,   4,     64,     64,    103,    851,    235,     1.7,    27.1,     9.4
+
+It should be noted that the runtime reported is not wall time, but it is
+the total of the time required for the producer/consumer ensemble associated
+with a partition to deliver the full set of messages (StreamSize) to that
+partition and consume it back.
+
+The example above has a Stream size of 1024 ("S000001024") and 4 partitions
+with message size of 64. With each partition receiving 1024 bytes,
+a total of 4096 bytes is transmitted to the brokers, resulting in 4 partitions
+with 1024 bytes each. Given 64 byte packets, 16 messages are delivered 
+to each partition for a total of 64 messages * 64 bytes = 4096
+
+Details can be seen in the corresponding per-partition detail CSV for each
+test; e.g. the partition file's first four lines correspond to test line
+one above, and have:
+
+KafkaPerf-pkc-ep9-partition-T01-P04-R03-M000064b-S000001024-A01-Ctrue.csv
+Topic, Prtn, MsgSize, Messages, MinLat, MaxLat, AvgLat, Kbps, Msgps, Runtime
+  0,   0,     64,     16,    105,    897,    287,     0.3,     4.8,     3.3s
+  0,   1,     64,     16,     95,    688,    258,     0.3,     5.0,     3.2s
+  0,   2,     64,     16,    101,    513,    256,     0.2,     3.6,     4.5s
+  0,   3,     64,     16,     94,    840,    273,     0.3,     5.1,     3.1s
+
+The test summary aggregate for Kbps corresponds to 4 parallel streams of
+0.3 *3 + 0.2 Kbps = 1.1 Kbps across the test. Similarly for the runtime,
+we have 4 parallel streams taking 3.3 + 3.2 + 4.5 + 3.1 s = 14.1 
+
+Differences between test summaries and per-partition or per-topic summaries
+occur baed on round-off; since the averages for each report are computed
+separately; they are not averages of averages; but wholely computed from
+aggregates in each instance. The user is encouraged to confirm the equations.
+
+We used some variation of Gnuplot configuration similar to:
+
+set tics font ",16"
+set title font ",18"
+set xlabel font ",20"
+set ylabel font ",20"
+set y2label font ",20"
+set datafile separator ","
+set boxwidth 0.1 relative
+set style fill solid
+#set style fill solid 0.8 border -1
+set logscale y
+plot \
+'Summary-Confluent.csv' using ($2-.30):6  with boxes title 'Min Lat Confluent', \
+'Summary-Dev.csv'       using ($2-.20):6  with boxes title 'Min Lat MSK', \
+'Summary-Confluent.csv' using ($2-.05):8  with boxes title 'Avg Lat Confluent', \
+'Summary-Dev.csv'       using ($2+0.05):8 with boxes title 'Avg Lat MSK', \
+'Summary-Confluent.csv' using ($2+0.20):7 with boxes title 'Max Lat Confluent', \
+'Summary-Dev.csv'       using ($2+0.30):7 with boxes title 'Max Lat MSK', \
+'Summary-Confluent.csv' using 2:9 with linespoints lw 4 axes x1y2 title 'Kb/s Confluent', \
+'Summary-Dev.csv'       using 2:9 with linespoints lw 4 axes x1y2 title 'Kb/s MSK', \
+'Summary-Confluent.csv' using 2:10 with linespoints lw 4 axes x1y2 title 'Msg/s Confluent', \
+'Summary-Dev.csv'       using 2:10 with linespoints lw 4 axes x1y2 title 'Msg/s MSK'
+
+To generate the sample plots.
+
+Questions / Comments / Patches, please contact
+
+sven (at) manetu.com
+thebigcorporation (at) gmail.com
+
