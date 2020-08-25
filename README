@@ -15,11 +15,11 @@ Control knobs are enumerated in the parameter parser, and include:
  - Number of acks requested
  - Size of the data stream sent to each partition
 
-Defaults are documented in the constants secion of main.go
+Defaults are documented in the constants section of main.go
 
 Outputs reported are:
 
- - Latency Min/Max/Avg for end-to-end delivery of Messages from producer to consumer
+ - Latency Min/Max/Avg for end-to-end delivery of messages from producer to consumer
  - Messages per second delivered
  - Kilobytes per second delivered
 
@@ -27,7 +27,7 @@ Reporting is per test (aggregate of all topics), per topic, and per partition
 In addition, the test results are written into CSV files named to indicated the
 test parameters, for subsequent use by GnuPlot or similar.
 
-CVS format is (e.g. test summary report):
+CSV format is (e.g. test summary report):
 
 "KafkaPerf-pkc-ep9-summary-T01-P04-R03-M000064b-S000001024-A01-Ctrue.csv":
 Topic, Prtn, MsgSize, Messages, MinLat, MaxLat, AvgLat, Kbps, Msgps, Runtime
@@ -55,10 +55,10 @@ one above, and have:
 
 KafkaPerf-pkc-ep9-partition-T01-P04-R03-M000064b-S000001024-A01-Ctrue.csv
 Topic, Prtn, MsgSize, Messages, MinLat, MaxLat, AvgLat, Kbps, Msgps, Runtime
-  0,   0,     64,     16,    105,    897,    287,     0.3,     4.8,     3.3s
-  0,   1,     64,     16,     95,    688,    258,     0.3,     5.0,     3.2s
-  0,   2,     64,     16,    101,    513,    256,     0.2,     3.6,     4.5s
-  0,   3,     64,     16,     94,    840,    273,     0.3,     5.1,     3.1s
+  0,   0,     64,     16,    105,    897,    287,     0.3,     4.8,     3.3
+  0,   1,     64,     16,     95,    688,    258,     0.3,     5.0,     3.2
+  0,   2,     64,     16,    101,    513,    256,     0.2,     3.6,     4.5
+  0,   3,     64,     16,     94,    840,    273,     0.3,     5.1,     3.1
 
 The test summary aggregate for Kbps corresponds to 4 parallel streams of
 0.3 *3 + 0.2 Kbps = 1.1 Kbps across the test. Similarly for the runtime,

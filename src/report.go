@@ -30,7 +30,7 @@ func printResultLn(topic, partition int, msgSize, msgCount uint, min, max, avg, 
 }
 
 func printResultCSV(file *os.File, topic, partition int, msgSize, msgCount uint, min, max, avg, runtime time.Duration, tput, msgsec float64) {
-	reportstr := fmt.Sprintf("%3d, %3d, %6d, %6d, %6d, %6d, %6d, %7.1f, %7.1f, %7.1fs\n",
+	reportstr := fmt.Sprintf("%3d, %3d, %6d, %6d, %6d, %6d, %6d, %7.1f, %7.1f, %7.1f\n",
 		topic, partition, msgSize, msgCount, min.Milliseconds(), max.Milliseconds(), avg.Milliseconds(),
 		tput, msgsec, runtime.Seconds())
 	file.WriteString(reportstr)
