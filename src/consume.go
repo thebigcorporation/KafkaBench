@@ -1,4 +1,3 @@
-
 package main
 
 /*
@@ -20,7 +19,6 @@ limitations under the License.
 import (
 	"fmt"
 	"math"
-	"strconv"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
@@ -55,6 +53,9 @@ func launchConsumer(topic string, partitions uint) (*kafka.Consumer, error) {
 		return nil, errors.Wrapf(e, "kafka: subscribe: meta [%s]", topic)
 	}
 	nPart, e := pCount(meta, topic)
+	if e != nil {
+		return nil, errors.Wrapf(e, "kafka: pCount")
+	}
 	if nPart <= 0 {
 		return nil, errors.Errorf("kafka: subscribe: [%s] no partitions", topic)
 	}
@@ -73,13 +74,13 @@ func consumeStream(cfg *streamData) {
 	var latencySum time.Duration
 	var i uint64
 
-	dprint("Consuming Stream: " + cfg.topicName + " Partition: " + strconv.Itoa(int(cfg.partition)))
+	dprint("Consuming Stream: %s Partition %d\n", cfg.topicName, cfg.partition)
 	for i = 0; i < sSize; {
 		var flight time.Duration
 		if !up {
 			break
 		}
-		dprint("Topic: %s remaining: %d / %d", cfg.topicName, i, sSize)
+		dprint("Topic: %s remaining: %d / %d\n", cfg.topicName, sSize-i, sSize)
 		cfg.progress = uint(i * 100 / sSize)
 		ev := cfg.c.Poll(-1)
 		if ev == nil {
@@ -88,7 +89,7 @@ func consumeStream(cfg *streamData) {
 		switch x := ev.(type) {
 		case *kafka.Message:
 			m := ev.(*kafka.Message)
-			dprint("Received message on topic: %s", cfg.topicName)
+			dprint("Received message on topic: %s payload size: %d\n", cfg.topicName, len(m.Value))
 			flight = processTimeStamp(m)
 			msgCount++
 			latencySum += flight
@@ -99,13 +100,14 @@ func consumeStream(cfg *streamData) {
 				min = flight
 			}
 			dprint("Topic: %s Partition: %d MgsSize: %d Min: %d Max: %d\n",
-				cfg.topicName, cfg.partition, cfg.msgSize, cfg.minLatency, cfg.maxLatency)
+				cfg.topicName, cfg.partition, cfg.msgSize, min, max)
 			i += uint64(cfg.msgSize) //len(m.Value)
 		case kafka.Error:
 			if x.Code() == kafka.ErrAllBrokersDown {
 				up = false
 				panic(fmt.Sprintf("kafka Error: %s", x.Error()))
 			}
+			dprint("Kafka error: %s", x.Error())
 		case kafka.PartitionEOF:
 		default:
 		}
@@ -116,7 +118,6 @@ func consumeStream(cfg *streamData) {
 	cfg.msgCount = msgCount
 	cfg.maxLatency = max
 	cfg.minLatency = min
-	return
 }
 
 func updateProgressBar(cfg *streamData) {
@@ -129,8 +130,7 @@ func updateProgressBar(cfg *streamData) {
 			bar.Add(int(percentChange))
 			lastprogress = cfg.progress
 		}
-		time.
-			Sleep(500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 	percentChange = cfg.progress - lastprogress
 	bar.Add(int(percentChange))

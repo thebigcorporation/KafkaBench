@@ -17,6 +17,7 @@ limitations under the License.
 */
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"math"
@@ -41,6 +42,7 @@ const (
 	defaultMsgMax        uint   = 2 * 1024
 	defaultMsgMin        uint   = 128
 	defaultMsgStep       uint   = 4 // divisor for calc of next msgSize
+	defaultTxRetries     int    = 10
 )
 
 // this is used both for configuration
@@ -49,6 +51,7 @@ type streamData struct {
 	c             *kafka.Consumer
 	p             *kafka.Producer
 	evtChan       chan kafka.Event
+	txID          uuid.UUID
 	wgConsumer    *sync.WaitGroup
 	wgProducer    *sync.WaitGroup
 	wgProgress    *sync.WaitGroup
@@ -70,14 +73,19 @@ var configFile string
 var sSize uint64
 var acks int
 var tests, mMax, mMin, mStep, pMax, pMin, pStep, tMax, tMin, replicas uint
-var withCompletion, delete, reportPartitions, progressBar, debug bool
+var withCompletion, withEoS, delete, reportPartitions, progressBar, debug bool
 
 // HelloKafka is a demo function that belongs in hello-kafka
 func main() {
 
 	var e error
-	configFile, sSize, acks, replicas, tests, mMax, mMin, mStep, pMax, pMin, pStep,
-		tMax, tMin, withCompletion, delete, reportPartitions, progressBar, debug = parseArgs()
+	configFile, sSize,
+		acks, replicas, tests,
+		mMax, mMin, mStep,
+		pMax, pMin, pStep,
+		tMax, tMin,
+		withCompletion, withEoS,
+		delete, reportPartitions, progressBar, debug = parseArgs()
 
 	println("Hello Kafka\n")
 	dprint("Reading config from: %s\n", configFile)
@@ -115,8 +123,8 @@ func runPartitionStream(topics, partitions uint) {
 func runMsgStream(topics, partitions, msgSize uint) {
 	var i uint
 	for i = 0; i < tests; i++ {
-		str := fmt.Sprintf("Iteration %d Stream %d Topics %d Prtns %d MsgSize %d Acks %d Replicas %d Completions %t",
-			(i + 1), sSize, topics, partitions, msgSize, acks, replicas, withCompletion)
+		str := fmt.Sprintf("Iteration %d Stream %d Topics %d Prtns %d MsgSize %d Acks %d Replicas %d Completions %t EoS %t",
+			(i + 1), sSize, topics, partitions, msgSize, acks, replicas, withCompletion, withEoS)
 		printStr(1, str)
 		printStr(len(str), "-")
 		testKafka(topics, partitions, msgSize)
@@ -129,7 +137,10 @@ func testKafka(topics, partitions, msgSize uint) {
 	var wgProgress sync.WaitGroup
 	var testData map[uint]*streamData = make(map[uint]*streamData)
 
-	testSetup(topics, partitions, msgSize, &wgConsumer, &wgProducer, &wgProgress, testData)
+	//ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	testSetup(ctx, topics, partitions, msgSize, &wgConsumer, &wgProducer, &wgProgress, testData)
 
 	// Start all consumers first
 	for i := range testData {
@@ -140,62 +151,83 @@ func testKafka(topics, partitions, msgSize uint) {
 		wgConsumer.Add(1)
 		go consumeStream(testData[i])
 	}
-	// Now start producers - theu will run immediately
+	// Now start producers - they will run immediately
 	for i := range testData {
 		wgProducer.Add(1)
-		go produceStream(testData[i])
+		go produceStream(ctx, testData[i])
 	}
-	dprint("Waiting for Producers: ")
+	dprint("Waiting for Producers:\n")
 	wgProducer.Wait()
-	dprint("Producers Completed")
+	dprint("Producers Completed\n")
 
 	if progressBar {
-		dprint("Waiting for Progress Bars: ")
+		dprint("Waiting for Progress bars:\n")
 		wgProgress.Wait()
-		dprint("Consumers Completed")
+		dprint("Progress bars completed")
 	}
-	dprint("Waiting for Consumers: ")
+	dprint("Waiting for Consumers:\n")
 	wgConsumer.Wait()
-	dprint("Consumers Completed")
-
+	dprint("Consumers Completed\n")
+	for i, cfg := range testData {
+		if i%partitions == 0 {
+			// for each topic
+			cfg.c.Close()
+			cfg.p.Close()
+			deleteTopic(cfg.topicName)
+		}
+	}
 	testResult(topics, partitions, msgSize, testData)
 }
 
-func testSetup(topics, partitions, msgSize uint, wgConsumer, wgProducer, wgProgress *sync.WaitGroup, testData map[uint]*streamData) {
-	var p, t uint
+func testSetup(ctx context.Context, topics, partitions, msgSize uint, wgConsumer, wgProducer, wgProgress *sync.WaitGroup, testData map[uint]*streamData) {
+	var pt, t uint
+	var c *kafka.Consumer
+	var p *kafka.Producer
+	var txid uuid.UUID
 
 	postfix := string(uuid.New().String())[0:7] // postfix identifies a test iteration
 
 	for t = 0; t < topics; t++ {
 		topic := topicName(topics, t, partitions, msgSize) + "-" + postfix
-		dprint("Topic: " + topic)
+		dprint("Topic: %s\n", topic)
 		createTopic(topic, partitions, replicas)
 	}
 	// something related to the broker-side request timeout doesn't seem to work right
-	time.Sleep(5 * time.Second) // allow new topics to settle
+	time.Sleep(2 * time.Second) // allow new topics to settle
+
 	for t = 0; t < topics; t++ {
 		var e error
 		topic := topicName(topics, t, partitions, msgSize) + "-" + postfix
 
-		kC, e := launchConsumer(topic, partitions)
-		if e != nil {
-			panic("Cannot launch consumer: " + e.Error())
+		if withEoS {
+			txid = uuid.New()
 		}
-		kP, e := launchProducer(topic, partitions, acks)
+		p, e = launchProducer(topic, partitions, acks, txid)
 		if e != nil {
 			panic("Cannot launch producer: " + e.Error())
 		}
+		if withEoS {
+			if e = p.InitTransactions(ctx); e != nil {
+				panic("Cannot init EoS transactions: " + e.Error())
+			}
+		}
+		c, e = launchConsumer(topic, partitions)
+		if e != nil {
+			panic("Cannot launch consumer: " + e.Error())
+		}
 
-		for p = 0; p < partitions; p++ {
-			testCfg := streamData{topicName: topic, c: kC, p: kP,
-				evtChan:    make(chan kafka.Event),
+		for pt = 0; pt < partitions; pt++ {
+			testCfg := streamData{topicName: topic, c: c, p: p, txID: txid,
 				wgConsumer: wgConsumer, wgProducer: wgProducer, wgProgress: wgProgress,
-				partition: p, msgSize: msgSize,
+				partition: pt, msgSize: msgSize,
 				minLatency: math.MaxInt32}
-			testData[t*partitions+p] = &testCfg
+
+			if withCompletion || withEoS {
+				testCfg.evtChan = make(chan kafka.Event)
+			}
+			testData[t*partitions+pt] = &testCfg
 		}
 	}
-
 }
 
 // testResults reports the result of a test Run.
@@ -303,9 +335,6 @@ func testResult(topics, partitions, msgSize uint, testData map[uint]*streamData)
 			printDashes()
 			println()
 		}
-		result.c.Close()
-		result.p.Close()
-		deleteTopic(result.topicName)
 	}
 
 	latencyAvg = time.Duration(int64(latencyTotal) / int64(msgTotal))
@@ -329,8 +358,9 @@ func getPartition(partitions int, index int) int {
 
 // parseArgs parses the command line arguments and
 // returns the config files and topic on success, or exits on error
-func parseArgs() (string, uint64, int, uint, uint, uint, uint, uint, uint, uint, uint, uint, uint,
-	bool, bool, bool, bool, bool) {
+func parseArgs() (string, uint64, int,
+	uint, uint, uint, uint, uint, uint, uint, uint, uint, uint,
+	bool, bool, bool, bool, bool, bool) {
 
 	configFile := flag.String("f", "", "kafka configuration file")
 
@@ -352,13 +382,13 @@ func parseArgs() (string, uint64, int, uint, uint, uint, uint, uint, uint, uint,
 	tMax := flag.Uint("T", defaultTopicMax, "Max number of topics to test")
 	tMin := flag.Uint("t", defaultTopicMin, "Min number of topics to test")
 
-	completions := flag.Bool("c", true, "Wait for completion (acks != 0)")
+	completions := flag.Bool("c", false, "Wait for completion (synchronous)")
+	eos := flag.Bool("eos", false, "Exactly once semantics")
 	delete := flag.Bool("D", false, "Delete topics before test")
 	reportPartitions := flag.Bool("pr", false, "Report per-partition results")
 	progressBar := flag.Bool("pg", false, "Show progress bar")
 	debug := flag.Bool("d", false, "Show debug info")
 
-	flag.Parse()
 	flag.Parse()
 	if *configFile == "" {
 		flag.Usage()
@@ -374,17 +404,16 @@ func parseArgs() (string, uint64, int, uint, uint, uint, uint, uint, uint, uint,
 	if *tMin > *tMax {
 		*tMax = *tMin
 	}
-	if *completions && *acks == 0 {
-		flag.Usage()
-		println("Cannot have completion and acks == 0")
-		os.Exit(2) // the same exit code flag.Parse uses
+	if *eos {
+		*completions = true // EoS requires this
+		*acks = -1
 	}
 	return *configFile, *sSize, *acks, *replicas,
 		*tests,
 		*mMax, *mMin, *mStep,
 		*pMax, *pMin, *pStep,
 		*tMax, *tMin,
-		*completions,
+		*completions, *eos,
 		*delete, *reportPartitions, *progressBar,
 		*debug
 }

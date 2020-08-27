@@ -1,4 +1,3 @@
-
 package main
 
 /*
@@ -18,10 +17,12 @@ limitations under the License.
 */
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
-	"strconv"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/pkg/errors"
 
@@ -30,13 +31,21 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func launchProducer(topic string, partitions uint, acks int) (*kafka.Producer, error) {
+func launchProducer(topic string, partitions uint, acks int, txid uuid.UUID) (*kafka.Producer, error) {
 
 	localCfg := kafka.ConfigMap{
-		"max.in.flight.requests.per.connection": 1,
-		"retries":                               10,
 		"acks":                                  fmt.Sprintf("%d", acks),
 		"delivery.timeout.ms":                   60000,
+		"max.in.flight.requests.per.connection": 1,
+		"message.send.max.retries":              "10",
+		"message.timeout.ms":                    "30000",
+		"retries":                               10,
+	}
+	if !withCompletion {
+		localCfg.SetKey("go.delivery.reports", false)
+	}
+	if withEoS {
+		localCfg.SetKey("transactional.id", txid.String())
 	}
 	securityConfig(conf, &localCfg)
 	p, e := kafka.NewProducer(&localCfg)
@@ -58,6 +67,9 @@ func launchProducer(topic string, partitions uint, acks int) (*kafka.Producer, e
 		tPart[r].Offset = -1
 	}
 	tResult, e := p.OffsetsForTimes(tPart, 20000)
+	if e != nil {
+		return nil, errors.Wrap(e, "kafka: producer OffsetsForTimes")
+	}
 	for r := range tResult {
 		if tResult[r].Offset != 0 {
 			return nil, errors.New("Producer partitions: not empty")
@@ -66,10 +78,10 @@ func launchProducer(topic string, partitions uint, acks int) (*kafka.Producer, e
 	return p, nil
 }
 
-func produceStream(cfg *streamData) {
+func produceStream(ctx context.Context, cfg *streamData) {
 	defer cfg.wgProducer.Done()
 
-	dprint("Producing Stream: " + cfg.topicName + " Partition: " + strconv.Itoa(int(cfg.partition)))
+	dprint("Producing Stream: %s Partition: %d\n", cfg.topicName, cfg.partition)
 	buf := make([]byte, cfg.msgSize)
 	cfg.producerStart = time.Now()
 	// sSize is a global constant
@@ -91,31 +103,100 @@ func produceStream(cfg *streamData) {
 			Value: buf,
 			Key:   []byte(m),
 		}
-		if !withCompletion || acks == 0 {
-			e = cfg.p.Produce(&msg, nil)
-		} else {
+		// we rely on config parsing to ensure withEoS and withCompletion
+		// are never both set, but just in case, let's process EoS first
+		switch {
+		case withEoS:
+			e = writeTransaction(ctx, cfg, &msg)
+		case withCompletion:
 			e = cfg.p.Produce(&msg, cfg.evtChan)
+		default:
+			e = cfg.p.Produce(&msg, nil)
 		}
 		if e != nil {
 			panic(fmt.Sprintf("failed to deliver message: %s\n", e.Error()))
 		}
-		if !withCompletion || acks == 0 {
-			continue
-		}
-		message, e := getCompletion(cfg.evtChan)
-		if message.TopicPartition.Error != nil {
-			panic(fmt.Sprintf("failed to deliver message: %s\n", message.TopicPartition.Error))
+		if withCompletion && !withEoS {
+			message, e := getCompletion(cfg.evtChan)
+			if e != nil {
+				panic(fmt.Sprintf("failed to deliver message: %s\n", e.Error()))
+			}
+			_ = message
 		}
 	}
-	return
+	if withCompletion {
+		close(cfg.evtChan)
+	}
+}
+
+func produceMessage() {
+
 }
 
 func getCompletion(c chan kafka.Event) (*kafka.Message, error) {
-
 	msg := <-c
 	m := msg.(*kafka.Message)
 	if m.TopicPartition.Error != nil {
 		return m, errors.Wrap(m.TopicPartition.Error, "kafka: produce completion")
 	}
 	return m, nil
+}
+
+// Output to Audit log. Expects mAudit.TopicPartition.Topic to be set
+func writeTransaction(ctx context.Context, cfg *streamData, msg *kafka.Message) error {
+	var e error
+	var txAttempts int
+	var commitAttempts int
+
+redo:
+	txAttempts++
+	dprint("Partition %d Tx Attempts: %d\n", msg.TopicPartition.Partition, txAttempts)
+	if txAttempts > defaultTxRetries {
+		return errors.New("too many retries")
+	}
+	if e = cfg.p.BeginTransaction(); e != nil {
+		cfg.p.AbortTransaction(ctx)
+		fmt.Printf("Partition %d tx begin: %s", msg.TopicPartition.Partition, e.Error())
+		goto redo
+	}
+	e = cfg.p.Produce(msg, cfg.evtChan)
+	if e != nil {
+		if e.(kafka.Error).IsRetriable() {
+			cfg.p.AbortTransaction(ctx)
+			fmt.Printf("produce tx: %s", e.Error())
+			goto redo
+		}
+		return e
+	}
+	completion, e := getCompletion(cfg.evtChan)
+	if e != nil {
+		panic(fmt.Sprintf("failed to deliver message: %s\n", e.Error()))
+	}
+	if completion != nil && completion.TopicPartition.Error != nil {
+		cfg.p.AbortTransaction(ctx)
+		fmt.Printf("TopicPartition.Error: %s", completion.TopicPartition.Error.Error())
+		goto redo
+	}
+retry:
+	commitAttempts++
+	dprint("Commit Attempts: %d\n", commitAttempts)
+	if e = cfg.p.CommitTransaction(ctx); e != nil {
+		switch {
+		case e.(kafka.Error).TxnRequiresAbort():
+			cfg.p.AbortTransaction(ctx)
+			fmt.Printf("tx commit: %s", e.Error())
+			goto redo
+		case e.(kafka.Error).IsRetriable():
+			if commitAttempts > defaultTxRetries {
+				return errors.New(e.(kafka.Error).String())
+			}
+			fmt.Printf("tx commit: retry %d", commitAttempts)
+			goto retry
+		default:
+			fmt.Printf("tx commit fatal: %s", e.Error())
+			return e
+		}
+	}
+	dprint("Committed: %s:%d\n", cfg.topicName, cfg.partition)
+	return nil
 }
